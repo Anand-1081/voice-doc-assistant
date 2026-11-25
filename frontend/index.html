@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CityCare · Voice Appointment Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4f1ea;--card:#fffdf8;--ink:#1d2b2a;--mute:#6c7a77;--line:#e1dccf;--accent:#0f5c55;--accent2:#e4efe9;--warn:#b4442f;--hl:#fff1b8}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 Inter,system-ui,sans-serif}
+header{display:flex;align-items:baseline;gap:14px;padding:22px 32px 10px}
+h1{font:600 26px Fraunces,Georgia,serif;margin:0;letter-spacing:-.01em}
+header span{color:var(--mute)}
+main{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(320px,1fr);gap:22px;padding:12px 32px 32px;align-items:start}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+h2{font:600 17px Fraunces,Georgia,serif;margin:0 0 12px}
+.stack{display:grid;gap:22px}
+.doc{padding:10px 0;border-top:1px solid var(--line);transition:background .6s}
+.doc:first-of-type{border-top:0}
+.doc.hl,tr.hl{background:var(--hl)}
+.doc b{font-weight:600}.doc small{color:var(--mute);margin-left:6px}
+.day{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
+.day em{font-style:normal;color:var(--mute);width:84px;font-size:13px}
+.chip{background:var(--accent2);color:var(--accent);padding:2px 9px;border-radius:99px;font-size:12.5px;font-weight:500}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;color:var(--mute);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+td,th{padding:8px 6px;border-top:1px solid var(--line)}th{border-top:0}
+tr{transition:background .6s}
+.empty{color:var(--mute);padding:8px 0}
+.call{position:sticky;top:16px}
+.status{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.pill{font-size:12px;font-weight:600;padding:3px 10px;border-radius:99px;background:#eceae2;color:var(--mute)}
+.pill.ringing{background:#fde9c8;color:#8a5a00}.pill.connected{background:var(--accent2);color:var(--accent)}
+.timer{font:500 22px Fraunces,serif;font-variant-numeric:tabular-nums}
+canvas{width:100%;height:54px;display:block;background:#f1eee5;border-radius:10px}
+.ctrls{display:flex;gap:10px;margin:12px 0}
+button{flex:1;border:0;border-radius:10px;padding:11px;font:600 14px Inter;cursor:pointer;background:var(--accent);color:#fff}
+button.sec{background:#e9e5d9;color:var(--ink)}button.end{background:var(--warn)}button:disabled{opacity:.4;cursor:default}
+#tx{height:300px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px}
+.msg{max-width:88%;padding:8px 12px;border-radius:12px;font-size:14px}
+.msg.agent{background:var(--accent2);align-self:flex-start}.msg.user{background:#ebe6d8;align-self:flex-end}
+.card{border:1px solid var(--accent);background:#fff;border-radius:12px;padding:10px 14px;align-self:stretch;font-size:14px}
+.card.cancel{border-color:var(--warn)}.card b{font-family:Fraunces,serif}
+@media(max-width:860px){main{grid-template-columns:1fr;padding:10px 14px 24px}header{padding:18px 14px 6px}.call{position:static;order:-1}}
+</style>
+</head>
+<body>
+<header><h1>CityCare Appointment Desk</h1><span>Voice assistant · live dashboard</span></header>
+<main>
+  <div class="stack">
+    <section><h2>Doctors &amp; open slots</h2><div id="docs"></div></section>
+    <section><h2>Appointments</h2><div id="appts"></div></section>
+  </div>
+  <section class="call">
+    <div class="status"><span class="pill" id="pill">Idle</span><span class="timer" id="timer">00:00</span></div>
+    <canvas id="wave" width="600" height="108"></canvas>
+    <div class="ctrls">
+      <button id="start">Start call</button>
+      <button id="mute" class="sec" disabled>Mute</button>
+      <button id="end" class="end" disabled>End</button>
+    </div>
+    <div id="tx"><div class="empty">Press “Start call” and say hello. Allow microphone access.</div></div>
+  </section>
+</main>
+<audio id="remote" autoplay></audio>
+<script>
+const $=id=>document.getElementById(id);
+const fmtD=d=>new Date(d+"T00:00").toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short"});
+let pc,stream,timerId,t0,audioCtx,analyser,raf,muted=false,es;
+
+/* ---------- dashboard state ---------- */
+async function loadState(){
+  const s=await (await fetch("/api/state")).json();
+  $("docs").innerHTML=s.doctors.map(d=>`<div class="doc" data-doc="${d.name}"><b>${d.name}</b><small>${d.specialty}</small>
+    ${Object.entries(d.slots).map(([day,t])=>`<div class="day"><em>${fmtD(day)}</em>${t.length?t.map(x=>`<span class="chip">${x}</span>`).join(""):'<span class="empty">full</span>'}</div>`).join("")}</div>`).join("");
+  $("appts").innerHTML=s.appointments.length?`<table><tr><th>ID</th><th>Patient phone</th><th>Doctor</th><th>When</th></tr>
+    ${s.appointments.map(a=>`<tr data-id="${a.id}"><td>${a.id}</td><td>${a.phone}</td><td>${a.doctor}</td><td>${fmtD(a.date)}, ${a.time}</td></tr>`).join("")}</table>`
+    :'<div class="empty">No appointments yet.</div>';
+}
+function flash(el){if(!el)return;el.classList.add("hl");setTimeout(()=>el.classList.remove("hl"),2200)}
+
+/* ---------- transcript ---------- */
+function addMsg(role,text){
+  const tx=$("tx");if(tx.querySelector(".empty"))tx.innerHTML="";
+  const m=document.createElement("div");m.className="msg "+role;m.textContent=text;tx.append(m);tx.scrollTop=tx.scrollHeight;
+}
+function addCard(kind,a){
+  const c=document.createElement("div");c.className="card"+(kind==="cancelled"?" cancel":"");
+  c.innerHTML=`<b>${kind==="booked"?"Appointment confirmed":"Appointment cancelled"}</b><br>${a.doctor} · ${fmtD(a.date)} at ${a.time}<br><small>Ref ${a.id} · ${a.phone}</small>`;
+  $("tx").append(c);$("tx").scrollTop=$("tx").scrollHeight;
+}
+
+function connectEvents(){
+  es=new EventSource("/api/events");
+  es.onmessage=async e=>{
+    const ev=JSON.parse(e.data);
+    if(ev.type==="transcript")addMsg(ev.role,ev.text);
+    else if(ev.type==="state"){await loadState();}
+    else if(ev.type==="action"){
+      if(ev.action==="tool"){
+        const n=ev.args?.doctor_name;if(n)flash([...document.querySelectorAll(".doc")].find(d=>d.dataset.doc.toLowerCase().includes(n.toLowerCase().replace("dr.","").trim())));
+      }else{addCard(ev.action,ev.appointment);setTimeout(()=>flash(document.querySelector(`tr[data-id="${ev.appointment.id}"]`)),300);}
+    }
+  };
+}
+
+/* ---------- call state / sounds ---------- */
+function setState(s){const p=$("pill");p.className="pill "+s;p.textContent={idle:"Idle",ringing:"Ringing…",connected:"Connected",ended:"Call ended"}[s]}
+function tone(freq,dur,when=0){const c=audioCtx||(audioCtx=new AudioContext());const o=c.createOscillator(),g=c.createGain();
+  o.frequency.value=freq;g.gain.setValueAtTime(.08,c.currentTime+when);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+when+dur);
+  o.connect(g).connect(c.destination);o.start(c.currentTime+when);o.stop(c.currentTime+when+dur)}
+function startTimer(){t0=Date.now();timerId=setInterval(()=>{const s=Math.floor((Date.now()-t0)/1000);$("timer").textContent=String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")},500)}
+
+function drawWave(){
+  const cv=$("wave"),g=cv.getContext("2d"),buf=new Uint8Array(analyser.fftSize);
+  (function loop(){analyser.getByteTimeDomainData(buf);g.clearRect(0,0,cv.width,cv.height);g.strokeStyle="#0f5c55";g.lineWidth=2;g.beginPath();
+    buf.forEach((v,i)=>{const x=i/buf.length*cv.width,y=v/255*cv.height;i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();raf=requestAnimationFrame(loop)})();
+}
+
+/* ---------- WebRTC ---------- */
+async function startCall(){
+  $("start").disabled=true;setState("ringing");$("tx").innerHTML="";
+  audioCtx=audioCtx||new AudioContext();tone(440,.4);tone(480,.4,.5);
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+    pc=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});
+    pc.createDataChannel("chat");
+    stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+    pc.ontrack=e=>{ $("remote").srcObject=e.streams[0];
+      analyser=audioCtx.createAnalyser();analyser.fftSize=1024;audioCtx.createMediaStreamSource(e.streams[0]).connect(analyser);drawWave();
+      setState("connected");startTimer();$("mute").disabled=$("end").disabled=false;};
+    pc.onconnectionstatechange=()=>{if(["failed","closed","disconnected"].includes(pc.connectionState))endCall()};
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise(r=>{if(pc.iceGatheringState==="complete")return r();pc.onicegatheringstatechange=()=>pc.iceGatheringState==="complete"&&r();setTimeout(r,2500)});
+    const res=await fetch("/api/offer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sdp:pc.localDescription.sdp,type:pc.localDescription.type})});
+    await pc.setRemoteDescription(await res.json());
+  }catch(err){console.error(err);addMsg("agent","Could not start the call: "+err.message);endCall()}
+}
+function endCall(){
+  if(!pc)return;const p=pc;pc=null;p.close();stream?.getTracks().forEach(t=>t.stop());
+  clearInterval(timerId);cancelAnimationFrame(raf);tone(300,.35);setState("ended");
+  $("start").disabled=false;$("mute").disabled=$("end").disabled=true;$("mute").textContent="Mute";muted=false;
+}
+$("start").onclick=startCall;$("end").onclick=endCall;
+$("mute").onclick=()=>{muted=!muted;stream.getAudioTracks().forEach(t=>t.enabled=!muted);$("mute").textContent=muted?"Unmute":"Mute"};
+loadState();connectEvents();
+</script>
+</body>
+</html>

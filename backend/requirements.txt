@@ -1,0 +1,4 @@
+pipecat-ai[google,elevenlabs,silero,webrtc]>=0.0.90
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-dotenv>=1.0
